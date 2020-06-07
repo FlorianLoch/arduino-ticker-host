@@ -5,7 +5,7 @@ exports.pluginName = "Spotify Currently Playing";
 const spotifyScopes = ["user-read-playback-state"];
 const spotifyState = "USE-SOMETHING-BETTER-HERE"; // TODO, CSRF protection, see https://developer.spotify.com/documentation/general/guides/authorization-guide/
 const redirectUri = "/spotify-auth-callback/";
-const monitorInterval = 2000; // in milliseconds
+const monitorInterval = 3000; // in milliseconds
 
 exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
   let spotifyReady = false;
@@ -91,7 +91,20 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
       spotApi,
       () => {},
       (trackInfo) => {
-        console.log("Track changed: ", trackInfo);
+        const flattenedArtists = trackInfo.artists.reduce(
+          (previous, current, idx) => {
+            previous = previous + current;
+            if (idx < trackInfo.artists.length - 1) {
+              previous = previous + ", ";
+            }
+            return previous;
+          },
+          ""
+        );
+
+        sendFn(
+          `Playing '${trackInfo.name}' from '${flattenedArtists}' on '${trackInfo.album.name}'`
+        );
       }
     );
 
