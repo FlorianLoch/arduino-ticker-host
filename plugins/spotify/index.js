@@ -1,4 +1,5 @@
 const SpotifyWebApi = require("spotify-web-api-node");
+const c = require("colors/safe");
 
 exports.pluginName = "Spotify Currently Playing";
 
@@ -13,12 +14,14 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
 
   if (!clientId || !clientSecret) {
     console.log(
-      "=> Please provide the following keys in the configuration of the spotify plugin: " +
-        "'clientId', 'clientSecret' and 'redirectUri'." +
-        "Please refer to Spotify's documentation on how the retrieve these." +
-        "As redirect URI please set 'http://<YOUR HOST>" +
-        redirectUri +
-        "' in Spotify's dashboard."
+      c.red(
+        "=> Please provide the following keys in the configuration of the spotify plugin: " +
+          "'clientId', 'clientSecret' and 'redirectUri'." +
+          "Please refer to Spotify's documentation on how the retrieve these." +
+          "As redirect URI please set 'http://<YOUR HOST>" +
+          redirectUri +
+          "' in Spotify's dashboard."
+      )
     );
 
     process.exit(0);
@@ -38,7 +41,9 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
 
   const authUrl = spotApi.createAuthorizeURL(spotifyScopes, spotifyState);
   console.log(
-    `=> Please open your browser and go to '${authUrl}' to sign into your Spotify account`
+    c.yellow(
+      `=> Please open your browser and go to '${authUrl}' to sign into your Spotify account`
+    )
   );
 
   router.get(redirectUri, async (req, res) => {
@@ -46,14 +51,16 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
 
     if (state != spotifyState) {
       console.log(
-        `=> Callback route was called with invalid state: '${state}'`
+        c.red(`=> Callback route was called with invalid state: '${state}'`)
       );
       // also respond via res
       return;
     }
 
     if (!code) {
-      console.log("=> Callback route was called but no code was provided");
+      console.log(
+        c.red("=> Callback route was called but no code was provided")
+      );
       return;
     }
 
@@ -62,7 +69,7 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
       const { expires_in, access_token, refresh_token } = data.body;
 
       if (!access_token || !refresh_token) {
-        console.log("=> Failed retrieving access and/or refresh token");
+        console.log(c.red("=> Failed retrieving access and/or refresh token"));
         return;
       }
 
@@ -77,7 +84,7 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
 
       startTrackMonitor(accessToken, spotApi, sendFn);
     } catch (err) {
-      console.log("=> Failed retrieving an access code: ");
+      console.log(c.red("=> Failed retrieving an access code: "));
       console.log(err);
 
       res.send("<body><h1>FAILED signing into Spotify!</h1>");
@@ -90,10 +97,15 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
     const tm = new TrackMonitor(
       spotApi,
       () => {},
-      (trackInfo) => {
+      (trackInfo, isPlaying) => {
+        if (!isPlaying) {
+          sendFn("Spotify is currently paused...");
+          return;
+        }
+
         const flattenedArtists = trackInfo.artists.reduce(
           (previous, current, idx) => {
-            previous = previous + current;
+            previous = previous + current.name;
             if (idx < trackInfo.artists.length - 1) {
               previous = previous + ", ";
             }
@@ -118,31 +130,34 @@ class TrackMonitor {
     this.onRefreshToken = onRefreshToken;
     this.onChange = onChange;
 
-    this.currentTrack = {};
+    this.currentState = { item: {} };
   }
 
   async start() {
-    const currentTrack = await this._getCurrentTrack();
+    const currentState = await this._getCurrentState();
 
-    if (currentTrack.id != this.currentTrack.id) {
-      this.currentTrack = currentTrack;
+    if (
+      currentState.is_playing !== this.currentState.is_playing ||
+      currentState.item.id !== this.currentState.item.id
+    ) {
+      this.currentState = currentState;
 
-      this.onChange(currentTrack);
+      this.onChange(currentState.item, currentState.is_playing);
     }
 
     setTimeout(this.start.bind(this), monitorInterval);
   }
 
-  async _getCurrentTrack() {
+  async _getCurrentState() {
     try {
       const data = await this.spotApi.getMyCurrentPlaybackState();
 
       if (data.statusCode === 204) {
-        // nothing currently playing
-        return {};
+        // according to the docs this is returned if the there is no playback currently. We therefore create a meaning full mock answer instead.
+        return { item: {}, is_playing: false };
       }
 
-      return data.body.item;
+      return data.body;
     } catch (err) {
       console.log("=> Could not fetch currently playing track: ", err);
     }
