@@ -10,7 +10,7 @@ const monitorInterval = 3000; // in milliseconds
 
 exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
   let spotifyReady = false;
-  const { clientId, clientSecret, accessToken } = pluginConfig;
+  const { clientId, clientSecret, accessToken, refreshToken } = pluginConfig;
 
   if (!clientId || !clientSecret) {
     console.log(
@@ -18,9 +18,9 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
         "=> Please provide the following keys in the configuration of the spotify plugin: " +
           "'clientId', 'clientSecret' and 'redirectUri'." +
           "Please refer to Spotify's documentation on how the retrieve these." +
-          "As redirect URI please set 'http://<YOUR HOST>" +
+          "As redirect URI please set http://<YOUR HOST>" +
           redirectUri +
-          "' in Spotify's dashboard."
+          " in Spotify's dashboard."
       )
     );
 
@@ -33,8 +33,8 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
     redirectUri: hostUri + redirectUri,
   });
 
-  if (accessToken) {
-    startTrackMonitor(accessToken, spotApi, sendFn);
+  if (accessToken && refreshToken) {
+    startTrackMonitor(accessToken, refreshToken);
 
     return;
   }
@@ -77,12 +77,12 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
       pluginConfig.refreshToken = refresh_token;
 
       console.log(
-        `=> Successfully retrieved an access token ('${access_token}'). Let's roll!`
+        `=> Successfully retrieved an access token ('${access_token}'). Expires in ${expires_in} Let's roll!`
       );
 
       res.send("<body><h1>Successfully signed into Spotify!</h1>");
 
-      startTrackMonitor(accessToken, spotApi, sendFn);
+      startTrackMonitor(access_token, refresh_token);
     } catch (err) {
       console.log(c.red("=> Failed retrieving an access code: "));
       console.log(err);
@@ -91,12 +91,25 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
     }
   });
 
-  function startTrackMonitor(accessToken) {
+  function startTrackMonitor(accessToken, refreshToken) {
     spotApi.setAccessToken(accessToken);
+    spotApi.setRefreshToken(refreshToken);
 
     const tm = new TrackMonitor(
       spotApi,
-      () => {},
+      async () => {
+        try {
+          const response = await spotApi.refreshAccessToken();
+          const accessToken = response.body.access_token;
+
+          pluginConfig.accessToken = accessToken;
+          spotApi.setAccessToken(accessToken);
+
+          console.log("=> Successfully refreshed the access token.");
+        } catch (err) {
+          console.log(c.red("=> Could not refresh the access token: "), err);
+        }
+      },
       (trackInfo, isPlaying) => {
         if (!isPlaying) {
           sendFn("Spotify is currently paused...");
@@ -115,7 +128,7 @@ exports.onLoad = (pluginConfig, hostUri, router, sendFn) => {
         );
 
         sendFn(
-          `Playing '${trackInfo.name}' from '${flattenedArtists}' on '${trackInfo.album.name}'`
+          `Playing "${trackInfo.name}" by "${flattenedArtists}" on "${trackInfo.album.name}"`
         );
       }
     );
@@ -149,17 +162,32 @@ class TrackMonitor {
   }
 
   async _getCurrentState() {
-    try {
-      const data = await this.spotApi.getMyCurrentPlaybackState();
+    return inner.call(this, 0);
 
-      if (data.statusCode === 204) {
-        // according to the docs this is returned if the there is no playback currently. We therefore create a meaning full mock answer instead.
-        return { item: {}, is_playing: false };
+    async function inner(retryCounter) {
+      if (retryCounter < 2) {
+        try {
+          let data = await this.spotApi.getMyCurrentPlaybackState();
+
+          if (data.body.item) {
+            return data.body;
+          }
+        } catch (err) {
+          console.log("=> Could not fetch track currently playing: ", err);
+
+          if (err.statusCode == 401) {
+            await this.onRefreshToken();
+
+            return inner.call(this, retryCounter++);
+          }
+        }
       }
 
-      return data.body;
-    } catch (err) {
-      console.log("=> Could not fetch currently playing track: ", err);
+      // According to the docs there are cases (204 if no active
+      // device and 200 and empty body active device but no playback) in which no data
+      // is returned but the call still succeeds.
+      // We therefore create a meaning full mock answer instead.
+      return { item: {}, is_playing: false };
     }
   }
 }
